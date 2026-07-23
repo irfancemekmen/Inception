@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y \
     php7.4-fpm \
     php7.4-mysql \
     curl \
-    mariadb-client \
+    mariadb-client
 
 # wp-cli aracını indir (WordPress'i komut satırından kurmak için)
 RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && \
