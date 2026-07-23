@@ -1,18 +1,14 @@
-FROM	debian:bookworm-slim
+FROM debian:bullseye
 
-# Gerekli paketleri kur ve önbelliği temizle
-RUN	apt-get update && apt-get install -y \
-	mariadb-server \
-	&& rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y mariadb-server
 
-# MariaDB'nin dışarıdan (Nginx/WordPress) bağlantı kabul etmesi için konfigürasyonu güncelle
-RUN	sed -i 's/bind-address\s*=\s*127.0.0.1/bind-address = 0.0.0.0/' /etc/mysql/mariadb.conf.d/50-server.cnf
+# Yapılandırma ve betik dosyalarını kopyala
+COPY conf/50-server.cnf /etc/mysql/mariadb.conf.d/50-server.cnf
+COPY tools/mariadb_init.sh /usr/local/bin/
 
-RUN	mkdir -p /var/run/mysqld && \
-	chown -m 755 /var/run/mysqld && \
-	chown -R mysql:mysql /var/run/mysqld /var/lib/mysql
+RUN chmod +x /usr/local/bin/mariadb_init.sh
 
-EXPOSE	3306
+EXPOSE 3306
 
-#MariaDB güvenli modda başlatılır
-CMD	["mysqld_safe"]
+# Konteyner başlatıldığında betiği çalıştır
+ENTRYPOINT [ "mariadb_init.sh" ]
