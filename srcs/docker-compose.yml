@@ -39,7 +39,6 @@ services:
     depends_on:
       - wordpress
 
-# LÜTFEN DİKKAT: Aşağıdaki iki satır en sola yaslı olmalı (önlerinde hiç boşluk yok)
 volumes:
   wordpress_data:
     driver: local
