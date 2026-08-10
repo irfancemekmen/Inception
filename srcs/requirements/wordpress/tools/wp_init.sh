@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# Eğer WordPress yüklü değilse wp-cli ile kur
 if [ ! -f /var/www/wordpress/wp-config.php ]; then
     wp core download --allow-root
 
@@ -10,7 +9,6 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
         --dbpass=$MYSQL_PASSWORD \
         --dbhost=mariadb:3306 --allow-root
 
-    # Admin kullanıcı adı kurallara uymalıdır (admin veya administrator içeremez)
     wp core install \
         --url=iekmen.42.fr \
         --title="Inception 42" \
@@ -23,8 +21,6 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
         --role=author --user_pass=$WP_NORMAL_PASSWORD --allow-root
 fi
 
-# Dosya izinlerini düzelt
 chown -R www-data:www-data /var/www/wordpress
 
-# PHP-FPM'i ön planda çalıştır
 exec php-fpm7.4 -F
