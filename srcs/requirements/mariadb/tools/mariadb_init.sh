@@ -7,6 +7,10 @@ set -e
 if [ ! -d "/var/lib/mysql/mysql" ]; then
     echo "MariaDB ilk kurulumu yapılıyor..."
 
+    # Şifreler Docker secrets dosyalarından okunur (.env'de tutulmaz)
+    MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+    MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+
     chown -R mysql:mysql /var/lib/mysql
     mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
 
@@ -24,6 +28,10 @@ EOF
 
     echo "MariaDB ilk kurulumu tamamlandı."
 fi
+
+# Soket dizini (her açılışta garanti et)
+mkdir -p /run/mysqld
+chown mysql:mysql /run/mysqld
 
 # MariaDB'yi PID 1 olarak ön planda çalıştır
 exec mysqld_safe

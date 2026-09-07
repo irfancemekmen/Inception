@@ -49,6 +49,9 @@ services:
       - db_data:/var/lib/mysql
     networks:
       - inception_network
+    secrets:
+      - db_password
+      - db_root_password
 
   wordpress:
     build: ./requirements/wordpress
@@ -60,6 +63,10 @@ services:
       - wordpress_data:/var/www/wordpress
     networks:
       - inception_network
+    secrets:
+      - db_password
+      - wp_admin_password
+      - wp_user_password
     depends_on:
       - mariadb
 
@@ -95,6 +102,16 @@ networks:
   inception_network:
     driver: bridge
     name: inception_network
+
+secrets:
+  db_password:
+    file: ../secrets/db_password.txt
+  db_root_password:
+    file: ../secrets/db_root_password.txt
+  wp_admin_password:
+    file: ../secrets/wp_admin_password.txt
+  wp_user_password:
+    file: ../secrets/wp_user_password.txt
 ```
 
 #### Genel Parametre Açıklamaları:
@@ -102,7 +119,8 @@ networks:
 - **image:** Derlenen imaja verilecek ad ve etiketi belirler (`mariadb:1.0` gibi). Servis adıyla aynı isim kullanılır; subject `latest` etiketini yasakladığı için sabit bir sürüm etiketi (`1.0`) verilir.
 - **container_name:** Çalışan konteynerin adını sabitler.
 - **restart: always:** Olası bir hata veya sunucu kapanıp açılması durumunda konteynerin otomatik olarak yeniden başlatılmasını garanti eder.
-- **env_file:** Veritabanı şifreleri ve admin bilgileri gibi hassas verileri `.env` dosyasından okuyarak çevre değişkeni olarak konteynere aktarır.
+- **env_file:** `.env` dosyasındaki **şifre içermeyen** değişkenleri (alan adı, veritabanı adı, kullanıcı adları, e-postalar) çevre değişkeni olarak konteynere aktarır.
+- **secrets:** Şifreleri konteynere çevre değişkeni olarak değil, `/run/secrets/<ad>` altında **dosya** olarak verir. Üst düzey `secrets:` bloğu her şifreyi host'taki `../secrets/*.txt` dosyasına bağlar. Yalnızca ihtiyacı olan servis ilgili secret'ı listeler (nginx hiç şifre görmez).
 - **volumes:** Konteyner içindeki verilerin silinmesini önlemek için verileri ana makinedeki kalıcı disk alanına bağlar.
 - **networks:** Konteyneri `inception_network` adlı özel izole iç ağımıza dahil eder.
 - **ports (Sadece NGINX için):** Ana makinemize (host) `443` portundan (HTTPS) gelen tüm istekleri, NGINX konteynerinin `443` portuna yönlendirir. Proje kuralları gereği port `80` (HTTP) kapalı tutulmaktadır.
@@ -157,7 +175,7 @@ EXPOSE 3306
 ENTRYPOINT [ "mariadb_init.sh" ]
 ```
 - Konteyner ayağa kalktığında (run edildiğinde) çalışacak olan ana programı (başlangıç noktasını) belirler.
-- `ENTRYPOINT`, bir Docker konteynerinin kalbidir. Docker konteynerleri, içlerindeki ana süreç çalıştığı sürece hayatta kalırlar. Bu satır, konteyner başladığı an senin yazdığın `mariadb_init.sh` betiğini tetikler. Bu betiğin içinde veritabanı oluşturulur, şifreler `.env` dosyasından çekiliğ ayarlarnır ve betiğin en sonunda MariaDB arka plan hizmeti (`mysqld`) başlatılır.
+- `ENTRYPOINT`, bir Docker konteynerinin kalbidir. Docker konteynerleri, içlerindeki ana süreç çalıştığı sürece hayatta kalırlar. Bu satır, konteyner başladığı an `mariadb_init.sh` betiğini tetikler. Bu betiğin içinde veritabanı oluşturulur, şifreler `/run/secrets/*` dosyalarından okunur ve betiğin en sonunda MariaDB ön planda (`mysqld_safe`) başlatılır.
 
 #### 2. Yapılandırma Dosyası (`srcs/requirements/mariadb/conf/50-server.cnf`)
 ```ini
@@ -182,9 +200,13 @@ if [ ! -d "/var/lib/mysql/mysql" ]; then
 - Volume `driver_opts` ile host'a `bind` edildiği için Docker, imaj içindeki `/var/lib/mysql` içeriğini boş volume'a **kopyalamaz**; bu yüzden datadir'i betik içinde biz kuruyoruz. İkinci ve sonraki açılışlarda bu blok atlanır, veriler korunur.
 
 ```bash
+    MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+    MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+
     chown -R mysql:mysql /var/lib/mysql
     mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
 ```
+- Şifreler `.env`'de değil, `docker-compose.yml`'nin bağladığı `/run/secrets/*` dosyalarındadır; betik bunları okuyup değişkene alır. `$MYSQL_DATABASE` ve `$MYSQL_USER` ise `.env`'den (`env_file`) gelir.
 - `chown`: host'ta oluşturulan `/home/iekmen/data/mariadb` dizini farklı bir kullanıcıya ait olabilir; `mysql` kullanıcısının yazabilmesi için sahiplik düzeltilir.
 - `mysql_install_db`: MariaDB'nin çalışması için gereken sistem tablolarını (`mysql`, `information_schema` şemaları) oluşturur. `--skip-test-db` gereksiz `test` veritabanını oluşturmaz.
 
@@ -203,9 +225,13 @@ EOF
 - `.env`'den gelen değişkenlerle: WordPress veritabanı oluşturulur, WordPress kullanıcısı `@'%'` (herhangi bir IP — WordPress ayrı konteynerde olduğu için gerekli) olarak yaratılır ve bu veritabanında tam yetki alır, `root` şifresi belirlenir.
 
 ```bash
+mkdir -p /run/mysqld
+chown mysql:mysql /run/mysqld
+
 exec mysqld_safe
 ```
-- Betiğin her açılışta çalışan tek satırıdır. `exec`, bu bash sürecinin yerine `mysqld_safe`'i koyar; böylece MariaDB **PID 1** olarak ön planda çalışır ve konteyner ayakta kalır.
+- `mkdir -p /run/mysqld`: MariaDB'nin unix soket dosyasını (`/run/mysqld/mysqld.sock`) oluşturacağı dizin her açılışta garanti edilir.
+- `exec mysqld_safe`: Betiğin her açılışta çalışan son satırı. `exec`, bu bash sürecinin yerine `mysqld_safe`'i koyar; böylece MariaDB **PID 1** olarak ön planda çalışır ve konteyner ayakta kalır.
 
 * **mariadb_init.sh Genel İşleyiş:** İlk açılışta `mysql_install_db` ile datadir kurulur, ardından `mysqld --bootstrap` ile `.env` değişkenleri kullanılarak veritabanı, kullanıcı ve şifreler çevrimdışı olarak oluşturulur. Sonraki açılışlarda `if` bloğu atlanır. Her durumda betik `exec mysqld_safe` ile MariaDB'yi PID 1 olarak başlatır.
 
@@ -224,13 +250,15 @@ FROM debian:bookworm
 ```dockerfile
 RUN apt-get update && apt-get install -y \
     php8.2-fpm \
+    php8.2-cli \
     php8.2-mysql \
     curl \
     mariadb-client
 ```
-- Sistemin paket listesini günceller ve WordPress'in çalışması için gereken 4 temel programı kurar.
+- Sistemin paket listesini günceller ve WordPress'in çalışması için gereken temel programları kurar.
 - Not: bookworm deposu PHP 8.2 sunar (bullseye 7.4 sunuyordu). Bu yüzden paket adları, `/etc/php/8.2/...` yolu ve `php-fpm8.2` ikilisi 8.2 sürümüne göredir.
-- `php8.2-fpm` : FPM (FastCGI Process Manager), PHP kodlarını web sunucularının (NGINX) anlayabileceği şekilde çok hızlı işleyen özel bir servistir. Standart `php` paketi yerine bunu kurmamız gerekiyor.
+- `php8.2-fpm` : FPM (FastCGI Process Manager), PHP kodlarını web sunucularının (NGINX) anlayabileceği şekilde çok hızlı işleyen özel bir servistir.
+- `php8.2-cli` : `wp-cli` (`wp`) komutunu çalıştırmak için gereken PHP komut satırı yorumlayıcısı. `php8.2-fpm` tek başına `php` komutunu kurmaz.
 - `php8.2-mysql` : WordPress'in PHP kodlarının, az önce kurduğumuz MariaDB veritabanına bağlanıp konuşabilmesini sağlayan çevirmen eklentisidir.
 - `curl` : İnternetten dosya indrime aracıdır.
 - `mariadb-client` : Veritabanı motoru değildir, sadece terminalden veritabanına bağlanmayı sağlayan araçlardır. `wp-cli` aracaının veritabanı bağlantısını test edebilmesi için gereklidir.
@@ -309,45 +337,50 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
 - Konteynerler `docker-compose down` ile durdurulup tekrar `up` ile başlatılabilir. Verilerimiz `volumes` sayesinde kalıcı olduğu için WordPress dosyaları diskte duruyor olacaktır. Eğer bu `if` kontrolünü koymasak, konteyner her yeniden başladığında WordPress'i sıfırdan kurmaya çalışır ve sistem çöker. Bu satır, "Sadece ilk kurulumda çalış" sigortasıdır.
 
 ```bash
+    MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+    WP_ADMIN_PASSWORD=$(cat /run/secrets/wp_admin_password)
+    WP_NORMAL_PASSWORD=$(cat /run/secrets/wp_user_password)
+
     wp core download --allow-root
 ```
+- Şifreler `docker-compose.yml`'nin bağladığı `/run/secrets/*` dosyalarından okunur (`.env`'de tutulmaz). Kullanıcı adları, veritabanı adı ve alan adı `.env`'den gelir.
 - `wp-cli` aracını kullanarak WordPress'in en güncel çekirdek dosyalarını internetten indirir.
 - `--allow-root` Nedir? Docker konteynerleri varsayılan olarak en yüksek yetkili kullanıcı olan `root` olarak çalışır. Ancak WP-CLI, güvenlik sebebiyle "Root olarak WordPress kuramazsın" diyerek işlemi engeller. `--allow-root` parametresi ile bu güvenlik uyarısını bilerek aşıyor ve "Ben ne yaptığımı biliyorum, işleme devam et" diyoruz.
 
 ```bash
-    while ! mariadb -h mariadb -u $MYSQL_USER -p$MYSQL_PASSWORD -e "SELECT 1;" &> /dev/null; do
-        echo "MariaDB henüz hazır değil, bekleniyor..."
-        sleep 3
+    for i in $(seq 30); do
+        mariadb -h mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" &> /dev/null && break
+        sleep 2
     done
 ```
 - `depends_on` yalnızca MariaDB konteynerinin **başladığını** garanti eder, veritabanının **bağlantı kabul etmeye hazır** olduğunu değil. Bu döngü, `wp config create` çalışmadan önce MariaDB'ye gerçekten bağlanabildiğimizi doğrular.
-- Bu bir "sonsuz döngü hilesi" değildir: koşul sağlanınca (DB ayağa kalkınca) döngü biter ve betik `exec php-fpm8.2 -F` satırına ilerler. Konteyneri ayakta tutan şey döngü değil, sondaki `exec`'tir.
+- Sınırlı sayıda (30) denemedir, bir "sonsuz döngü / `while true`" hilesi değildir: bağlantı kurulunca döngü kırılır ve betik sonunda `exec php-fpm8.2 -F` çalışır. Konteyneri ayakta tutan şey döngü değil, sondaki `exec`'tir.
 
 ```bash
     wp config create \
-        --dbname=$MYSQL_DATABASE \
-        --dbuser=$MYSQL_USER \
-        --dbpass=$MYSQL_PASSWORD \
+        --dbname="$MYSQL_DATABASE" \
+        --dbuser="$MYSQL_USER" \
+        --dbpass="$MYSQL_PASSWORD" \
         --dbhost=mariadb:3306 --allow-root
 ```
 - Normalde WordPress'i kurarken tarayıcıda doldurduğun "Veritabanı Adı, Kullanıcı Adı, Şifre" ekranının terminal (kod) karşılığıdır. Bu bilgileri alıp bir `wp-config.php` dosyası oluşturur.
-- Şifreler `docker-compose.yml` üzerinden içeri aktarılan `.env` değişkenlerinden (`$MYSQL_DATABSE` vb.) otomatik çekilir.
+- `$MYSQL_DATABASE` ve `$MYSQL_USER` `.env`'den (`env_file`) gelir; `$MYSQL_PASSWORD` betiğin başında `/run/secrets/db_password` dosyasından okunmuştur.
 - En önemli kısım `dbhost=mariadb:3306` : Dikkat edersen IP adresi yerine `mariadb` yazdık. Docker Compose'un kendi iç ağı (`inception_network`) sayesinde, WordPress doğrudan MariaDB konteynerinin adıyla onu bulur ve bağlanır.
 
 ```bash
     wp core install \
-        --url=iekmen.42.fr \
+        --url="$DOMAIN_NAME" \
         --title="Inception 42" \
-        --admin_user=$WP_ADMIN_USER \
-        --admin_password=$WP_ADMIN_PASSWORD \
-        --admin_email=$WP_ADMIN_EMAIL --allow-root
+        --admin_user="$WP_ADMIN_USER" \
+        --admin_password="$WP_ADMIN_PASSWORD" \
+        --admin_email="$WP_ADMIN_EMAIL" --allow-root
 ```
 - Veritabanı bağlantısı sağlandıktan sonra web sitesini fiziksel olarak ayağa kaldırır ve yönetici hesabını oluşturur.
 
 ```bash
     wp user create \
-        $WP_NORMAL_USER $WP_NORMAL_EMAIL \
-        --role=author --user_pass=$WP_NORMAL_PASSWORD --allow-root
+        "$WP_NORMAL_USER" "$WP_NORMAL_EMAIL" \
+        --role=author --user_pass="$WP_NORMAL_PASSWORD" --allow-root
 fi
 ```
 - Admin haricinde normal bir kullanıcı daha oluşturur ve ona "yazar"(`author`) yetkisi verir.
@@ -392,11 +425,13 @@ RUN mkdir -p /etc/nginx/ssl
 - NGINX ayar klasörünün (`/etc/nginx/`) içine `ssl` adında boş bir klasör açıyor. Birazdan üreteceğimiz dijital anahtarları burada saklayacağız.
 
 ```dockerfile
-RUN openssl req -x509 -nodes -out /etc/nginx/ssl/inception.crt -keyout /etc/nginx/ssl/inception.key -subj "/C=TR/ST=Kocaeli/L=Kocaeli/O=42/OU=42/CN=iekmen.42.fr/UID=iekmen"
+RUN openssl req -x509 -nodes -newkey rsa:2048 -days 365 -out /etc/nginx/ssl/inception.crt -keyout /etc/nginx/ssl/inception.key -subj "/C=TR/ST=Kocaeli/L=Kocaeli/O=42/OU=42/CN=iekmen.42.fr/UID=iekmen"
 ```
-- `openssl` aracını kullanarak, web sitesine HTTPS ile girilebilmesini sağlayan şifreleme anahtarkalarını üretir.
+- `openssl` aracını kullanarak, web sitesine HTTPS ile girilebilmesini sağlayan şifreleme anahtarlarını üretir.
 - `req -x509` : Standart bir X.509 dijital sertifikası oluşturulmasını ister.
-- `-nodes` : "No Des" (şifresiz anahtar) anlamına gelir. Normalde SSL anahtarları bir şifreyler korunur ve sunucu her yeniden başladığında o şifreyi girmen gerekir. `-nodes` diyerek Docker'ın insan müdahelesi olmadan, otomatik (şifresiz) çalışmasını sağlıyoruz.
+- `-newkey rsa:2048` : Sertifikayla birlikte yeni bir 2048-bit RSA özel anahtar üretir.
+- `-days 365` : Sertifikanın geçerlilik süresi (varsayılan 30 gün yerine 1 yıl).
+- `-nodes` : Özel anahtarı parola ile şifreleme; böylece NGINX her açılışta parola sormadan başlar.
 - `-out`  ve `-keyout` : Üretilen sertifikanın (`inception.crt` - asma kilit kısmı) ve gizli anahtarın (`inception.key` - senin kasanın anahtarı) az önce oluşturduğumuz klasöre kaydedilmesini sağlar.
 - `-subj "..."` : "Subject" (Özne) kısmıdır. Normalde SSL üretirken sana tek tek "Ülken ne? Şehrin ne? Organizasyon adın ne?" diye sorar. Bu bayrak sayesinde soruları baştan cevaplıyoruz (C=TR (Türkiye), ST=Kocaeli,O=42 (42 Okulu), CN=iekmen.42.fr (Domain Adı)). Böylece kurulum yarıda kesilmez.
 
@@ -456,30 +491,43 @@ http {
 
 ---
 
-## 4. Çevre Değişkenleri (.env)
+## 4. Çevre Değişkenleri (.env) ve Docker Secrets
 
-Projenin hassas ayarları `srcs/.env` dosyasında tutulur ve Docker Compose tarafından okunur. Örnek bir `.env` içeriği ve değişken açıklamaları:
+Yapılandırma iki dosya grubuna ayrılır. **İkisi de `.gitignore` içindedir** ve asla
+commit edilmez.
+
+### 4.1. `srcs/.env` — şifre içermeyen ayarlar
+
+`env_file` ile konteynerlere çevre değişkeni olarak aktarılır.
 
 ```env
 DOMAIN_NAME=iekmen.42.fr
 
-# Veritabanı Ayarları
+# Veritabanı
 MYSQL_DATABASE=inception_db
 MYSQL_USER=inception_user
-MYSQL_PASSWORD=<db-kullanici-sifresi>
-MYSQL_ROOT_PASSWORD=<db-root-sifresi>
 
-# WordPress Ayarları
+# WordPress
 WP_ADMIN_USER=<admin-adi>          # "admin"/"administrator" içeremez
-WP_ADMIN_PASSWORD=<wp-admin-sifresi>
 WP_ADMIN_EMAIL=<admin-eposta>
 WP_NORMAL_USER=<yazar-adi>
-WP_NORMAL_PASSWORD=<yazar-sifresi>
 WP_NORMAL_EMAIL=<yazar-eposta>
 ```
 
-> Yukarıdaki `<...>` alanları örnektir. Gerçek `srcs/.env` dosyası `.gitignore` içindedir ve
-> asla commit edilmemelidir; gerçek parolalar yalnızca yerel `.env` dosyasında tutulur.
+### 4.2. `secrets/` — şifreler (her dosyada bir değer, sonda satır sonu yok)
+
+| Dosya | İçerik | Kullanan servis |
+| --- | --- | --- |
+| `secrets/db_root_password.txt` | MariaDB `root` şifresi | mariadb |
+| `secrets/db_password.txt` | `MYSQL_USER` şifresi | mariadb, wordpress |
+| `secrets/wp_admin_password.txt` | WordPress yönetici şifresi | wordpress |
+| `secrets/wp_user_password.txt` | WordPress ikinci kullanıcı şifresi | wordpress |
+
+`docker-compose.yml` içindeki üst düzey `secrets:` bloğu bu dosyaları tanımlar; her
+servis yalnızca ihtiyaç duyduğu secret'ı listeler. Konteyner içinde secret'lar
+`/run/secrets/<ad>` yoluna dosya olarak bağlanır ve başlangıç betikleri şifreleri
+`$(cat /run/secrets/...)` ile okur. Böylece hiçbir şifre `.env`'de, Dockerfile'da veya
+`docker inspect` çıktısında yer almaz.
 
 > [!IMPORTANT]
 > Proje kuralları gereği, `WP_ADMIN_USER` (WordPress Yönetici Adı) kesinlikle **admin** veya **administrator** kelimelerini (büyük/küçük harf duyarsız olarak) içeremez. Aksi halde kurulum betiği hata verecektir.

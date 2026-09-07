@@ -37,24 +37,35 @@ forbidden by the subject; Alpine/Debian base images are the only exception.
 
 ### Configuration
 
-Environment variables live in `srcs/.env`. This file is git-ignored and must **never**
-be committed. Create it from the template below and set your own values:
+Non-secret configuration lives in `srcs/.env`; **passwords are kept out of `.env`**
+and provided through Docker secrets. Both `srcs/.env` and `secrets/` are git-ignored
+and must **never** be committed.
+
+`srcs/.env` — only non-sensitive values:
 
 ```env
 DOMAIN_NAME=iekmen.42.fr
 
 MYSQL_DATABASE=inception_db
 MYSQL_USER=inception_user
-MYSQL_PASSWORD=<your-db-password>
-MYSQL_ROOT_PASSWORD=<your-db-root-password>
 
 WP_ADMIN_USER=<admin-name-without-"admin"-or-"administrator">
-WP_ADMIN_PASSWORD=<your-wp-admin-password>
 WP_ADMIN_EMAIL=<email>
 WP_NORMAL_USER=<author-name>
-WP_NORMAL_PASSWORD=<your-author-password>
 WP_NORMAL_EMAIL=<email>
 ```
+
+`secrets/` at the repository root — one password per file, no trailing newline:
+
+```
+secrets/db_root_password.txt     # MariaDB root password
+secrets/db_password.txt          # MariaDB user (MYSQL_USER) password
+secrets/wp_admin_password.txt    # WordPress admin password
+secrets/wp_user_password.txt     # WordPress second user password
+```
+
+`docker-compose.yml` mounts these into the `mariadb` and `wordpress` containers at
+`/run/secrets/<name>`; the entrypoint scripts read the passwords from there.
 
 ### Build and run
 
@@ -94,6 +105,8 @@ AI (Claude) was used as an assistant, not as a code generator, for:
   the installed packages, missing README sections, an empty `USER_DOC.md`).
 - **Explanations** – clarifying trade-offs (named volumes vs bind mounts, secrets vs
   environment variables, PID 1 and entrypoint design).
+- **Refactors** – moving every password out of `.env` into Docker secrets read from
+  `/run/secrets/` by the entrypoint scripts.
 - **Documentation** – drafting and structuring the Markdown files (this README and
   `USER_DOC.md`).
 
@@ -111,9 +124,9 @@ Each service has its own directory under `srcs/requirements/<service>/` containi
 - a `tools/` folder with the entrypoint script (for MariaDB and WordPress).
 
 `srcs/docker-compose.yml` wires everything together: builds, container names,
-`restart: always`, the `inception_network` bridge, the two named volumes, and the
-single published port (`443`, NGINX only). The root `Makefile` merely orchestrates
-`docker compose`.
+`restart: always`, the `inception_network` bridge, the two named volumes, the Docker
+secrets, and the single published port (`443`, NGINX only). The root `Makefile`
+merely orchestrates `docker compose`.
 
 Main design choices:
 
@@ -123,8 +136,8 @@ Main design choices:
   self-signed certificate generated at build time.
 - **WordPress waits for MariaDB** in its init script before running WP-CLI, instead
   of relying on `depends_on` alone (which does not wait for readiness).
-- **Credentials via environment variables** from a git-ignored `.env`; no password is
-  written in any Dockerfile.
+- **Passwords via Docker secrets**, non-secret settings via a git-ignored `.env`; no
+  password is written in any Dockerfile or in `.env`.
 
 ### Virtual Machines vs Docker
 
@@ -142,9 +155,10 @@ Environment variables (`.env` + `env_file`) are simple but leak easily: they app
 in `docker inspect`, `/proc/<pid>/environ`, child processes and logs, and the file is
 trivially committed by mistake. Docker **secrets** are mounted as files under
 `/run/secrets/`, are not exposed in the environment, and are only visible to services
-that explicitly declare them. This project uses environment variables (mandatory per
-the subject) with a strictly git-ignored `.env`; Docker secrets are the recommended
-hardening step and the natural next improvement.
+that explicitly declare them. This project uses the `.env` file (mandatory per the
+subject) **only for non-sensitive values** — the domain, the database name, usernames
+and e-mails — and keeps every password in a Docker secret read from `/run/secrets/`
+by the entrypoint scripts. Both `.env` and `secrets/` are git-ignored.
 
 ### Docker Network vs Host Network
 

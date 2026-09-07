@@ -33,7 +33,8 @@ iki kalıcı Docker volume'unda, host makinede `/home/iekmen/data` altında sakl
   127.0.0.1   iekmen.42.fr
   ```
 
-- `srcs/.env` dosyası mevcut ve doldurulmuş olmalı (repoya dahil değildir, bkz. Bölüm 5).
+- `srcs/.env` dosyası ve `secrets/` klasöründeki şifre dosyaları mevcut olmalı
+  (ikisi de repoya dahil değildir, bkz. Bölüm 5).
 
 ---
 
@@ -61,32 +62,44 @@ Tüm komutlar projenin kök dizininden çalıştırılır.
 Sertifika kendinden imzalı (self-signed) olduğu için tarayıcı "Bağlantınız gizli değil"
 uyarısı gösterir; bu beklenen bir durumdur, devam edin.
 
-Yönetim paneline `srcs/.env` içindeki `WP_ADMIN_USER` / `WP_ADMIN_PASSWORD` ile giriş
-yapılır. İkinci kullanıcı (`WP_NORMAL_USER`, "author" rolünde) içerik üretebilir ancak
-site ayarlarını değiştiremez.
+Yönetim paneline kullanıcı adı `srcs/.env` içindeki `WP_ADMIN_USER`, şifresi ise
+`secrets/wp_admin_password.txt` dosyasındaki değerle giriş yapılır. İkinci kullanıcı
+(`WP_NORMAL_USER`, "author" rolünde) içerik üretebilir ancak site ayarlarını
+değiştiremez.
 
 ---
 
 ## 5. Kimlik bilgilerini bulma ve yönetme
 
-Tüm kimlik bilgileri **`srcs/.env`** dosyasında tutulur. Bu dosya `.gitignore` içinde
-olduğu için git deposuna dahil edilmez ve asla commit edilmemelidir.
+Kimlik bilgileri iki yerde tutulur; **ikisi de `.gitignore` içindedir** ve asla commit
+edilmemelidir:
 
-`.env` içindeki değişkenler:
+**a) `srcs/.env` — şifre içermeyen ayarlar:**
 
 | Değişken | Açıklama |
 | --- | --- |
 | `DOMAIN_NAME` | Sitenin alan adı (`iekmen.42.fr`) |
 | `MYSQL_DATABASE` | WordPress veritabanının adı |
-| `MYSQL_USER` / `MYSQL_PASSWORD` | WordPress'in veritabanına bağlanırken kullandığı hesap |
-| `MYSQL_ROOT_PASSWORD` | Veritabanı `root` şifresi |
-| `WP_ADMIN_USER` / `WP_ADMIN_PASSWORD` / `WP_ADMIN_EMAIL` | WordPress yönetici hesabı (kullanıcı adı `admin` / `administrator` içeremez) |
-| `WP_NORMAL_USER` / `WP_NORMAL_PASSWORD` / `WP_NORMAL_EMAIL` | Normal (author) hesap |
+| `MYSQL_USER` | WordPress'in veritabanına bağlanırken kullandığı kullanıcı adı |
+| `WP_ADMIN_USER` / `WP_ADMIN_EMAIL` | WordPress yönetici kullanıcı adı / e-postası (ad `admin` / `administrator` içeremez) |
+| `WP_NORMAL_USER` / `WP_NORMAL_EMAIL` | Normal (author) kullanıcı adı / e-postası |
+
+**b) `secrets/` klasörü — her dosyada tek bir şifre:**
+
+| Dosya | İçerik |
+| --- | --- |
+| `secrets/db_root_password.txt` | MariaDB `root` şifresi |
+| `secrets/db_password.txt` | `MYSQL_USER` hesabının şifresi |
+| `secrets/wp_admin_password.txt` | WordPress yönetici şifresi |
+| `secrets/wp_user_password.txt` | WordPress ikinci kullanıcının şifresi |
+
+Bu dosyalar `docker-compose.yml` tarafından konteynerlere `/run/secrets/<ad>` yoluna
+bağlanır; başlangıç betikleri şifreleri oradan okur.
 
 **Şifre değiştirme:**
 
-- Kurulumdan önce: `.env` dosyasını düzenleyin, sonra `make re` çalıştırın (mevcut
-  veritabanı verisi silinir).
+- Kurulumdan önce: ilgili `secrets/*.txt` dosyasını düzenleyin, sonra `make re`
+  çalıştırın (mevcut veritabanı verisi silinir).
 - Kurulumdan sonra: değişikliği çalışan konteynerde yapın, ör.
   `docker exec -it mariadb mariadb -u root -p` veya
   `docker exec -it wordpress wp user update <kullanıcı> --user_pass=<yeni> --allow-root`.

@@ -1,50 +1,40 @@
 #!/bin/bash
+set -e
 
-# İşlemlerin doğru dizinde yapıldığından emin olalım
 cd /var/www/wordpress
 
-# Eğer wp-config.php yoksa kurulum işlemlerini başlat
 if [ ! -f /var/www/wordpress/wp-config.php ]; then
-    echo "WordPress çekirdek dosyaları indiriliyor..."
+    # Şifreler Docker secrets dosyalarından okunur (.env'de tutulmaz)
+    MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+    WP_ADMIN_PASSWORD=$(cat /run/secrets/wp_admin_password)
+    WP_NORMAL_PASSWORD=$(cat /run/secrets/wp_user_password)
+
     wp core download --allow-root
 
-    # CRITICAL FIX: MariaDB'nin hazır olmasını bekle
-    echo "MariaDB'nin ayağa kalkması bekleniyor..."
-    # Veritabanına bağlanana kadar 3 saniyede bir tekrar dener
-    while ! mariadb -h mariadb -u $MYSQL_USER -p$MYSQL_PASSWORD -e "SELECT 1;" &> /dev/null; do
-        echo "MariaDB henüz hazır değil, bekleniyor..."
-        sleep 3
+    # MariaDB bağlantı kabul edene kadar bekle (sınırlı deneme, sonsuz döngü değil)
+    for i in $(seq 30); do
+        mariadb -h mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" &> /dev/null && break
+        sleep 2
     done
-    echo "MariaDB hazır! Kuruluma devam ediliyor..."
 
-    echo "wp-config.php oluşturuluyor..."
     wp config create \
-        --dbname=$MYSQL_DATABASE \
-        --dbuser=$MYSQL_USER \
-        --dbpass=$MYSQL_PASSWORD \
+        --dbname="$MYSQL_DATABASE" \
+        --dbuser="$MYSQL_USER" \
+        --dbpass="$MYSQL_PASSWORD" \
         --dbhost=mariadb:3306 --allow-root
 
-    echo "WordPress veritabanına kuruluyor..."
     wp core install \
-        --url=iekmen.42.fr \
+        --url="$DOMAIN_NAME" \
         --title="Inception 42" \
-        --admin_user=$WP_ADMIN_USER \
-        --admin_password=$WP_ADMIN_PASSWORD \
-        --admin_email=$WP_ADMIN_EMAIL --allow-root
+        --admin_user="$WP_ADMIN_USER" \
+        --admin_password="$WP_ADMIN_PASSWORD" \
+        --admin_email="$WP_ADMIN_EMAIL" --allow-root
 
-    echo "Normal kullanıcı oluşturuluyor..."
     wp user create \
-        $WP_NORMAL_USER $WP_NORMAL_EMAIL \
-        --role=author --user_pass=$WP_NORMAL_PASSWORD --allow-root
-        
-    echo "WordPress kurulumu tamamlandı!"
-else
-    echo "WordPress zaten kurulu."
+        "$WP_NORMAL_USER" "$WP_NORMAL_EMAIL" \
+        --role=author --user_pass="$WP_NORMAL_PASSWORD" --allow-root
 fi
 
-# Dosya izinlerini düzelt
 chown -R www-data:www-data /var/www/wordpress
 
-# PHP-FPM'i ön planda çalıştır
-echo "PHP-FPM başlatılıyor..."
 exec php-fpm8.2 -F
