@@ -9,7 +9,10 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
     WP_ADMIN_PASSWORD=$(cat /run/secrets/wp_admin_password)
     WP_NORMAL_PASSWORD=$(cat /run/secrets/wp_user_password)
 
-    wp core download --allow-root
+    # Çekirdek dosyalar yoksa indir (yarım kalmış kurulumda tekrar indirme)
+    if [ ! -f /var/www/wordpress/wp-load.php ]; then
+        wp core download --allow-root
+    fi
 
     # MariaDB bağlantı kabul edene kadar bekle (sınırlı deneme, sonsuz döngü değil)
     for i in $(seq 30); do

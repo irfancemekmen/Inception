@@ -1,21 +1,22 @@
 #!/bin/bash
 set -e
 
-# İlk çalıştırma: sistem tabloları ("mysql" şeması) yoksa veritabanını sıfırdan hazırla.
-# Bind ile host'a bağlı volume'da Docker imaj içeriğini kopyalamadığı için
-# /var/lib/mysql ilk açılışta boş olabilir; bu yüzden datadir'i burada kuruyoruz.
+# Şifreler Docker secrets dosyalarından okunur (.env'de tutulmaz)
+MYSQL_PASSWORD=$(cat /run/secrets/db_password)
+MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
+
+# 1) Sistem tabloları ("mysql" şeması) yoksa veri dizinini sıfırdan kur.
 if [ ! -d "/var/lib/mysql/mysql" ]; then
-    echo "MariaDB ilk kurulumu yapılıyor..."
-
-    # Şifreler Docker secrets dosyalarından okunur (.env'de tutulmaz)
-    MYSQL_PASSWORD=$(cat /run/secrets/db_password)
-    MYSQL_ROOT_PASSWORD=$(cat /run/secrets/db_root_password)
-
+    echo "MariaDB veri dizini oluşturuluyor..."
     chown -R mysql:mysql /var/lib/mysql
     mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
+fi
 
-    # Veritabanını, kullanıcıyı ve şifreleri çevrimdışı (bootstrap) modda oluştur.
-    # Bootstrap modu ağ soketi açmaz; "start / sleep / shutdown" hilesine gerek kalmaz.
+# 2) Proje veritabanı yoksa; veritabanını, kullanıcıyı ve şifreleri çevrimdışı
+#    (bootstrap) modda oluştur. Bu blok, eski/yarım bir veri dizinini de onarır.
+if [ ! -d "/var/lib/mysql/${MYSQL_DATABASE}" ]; then
+    echo "Veritabanı ve kullanıcı oluşturuluyor..."
+    chown -R mysql:mysql /var/lib/mysql
     mysqld --user=mysql --bootstrap <<EOF
 USE mysql;
 FLUSH PRIVILEGES;
@@ -25,8 +26,7 @@ GRANT ALL PRIVILEGES ON \`${MYSQL_DATABASE}\`.* TO \`${MYSQL_USER}\`@'%';
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
 FLUSH PRIVILEGES;
 EOF
-
-    echo "MariaDB ilk kurulumu tamamlandı."
+    echo "MariaDB kurulumu tamamlandı."
 fi
 
 # Soket dizini (her açılışta garanti et)
