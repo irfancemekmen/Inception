@@ -47,4 +47,4 @@ chown -R www-data:www-data /var/www/wordpress
 
 # PHP-FPM'i ön planda çalıştır
 echo "PHP-FPM başlatılıyor..."
-exec php-fpm7.4 -F
+exec php-fpm8.2 -F

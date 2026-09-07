@@ -1,230 +1,169 @@
-# Inception Projesi Detaylı Analiz ve Yapılandırma Rehberi
+*This project has been created as part of the 42 curriculum by iekmen.*
 
-Bu doküman, 42 Network müfredatının sistem yönetimi ve sanallaştırma temellerini konu alan **Inception** projesinin tüm mimarisini, kullanılan teknolojileri ve bu teknolojilerin çalışma prensiplerini en temel seviyeden başlayarak tüm ayrıntılarıyla açıklamaktadır.
+# Inception
 
----
+## Description
 
-## 💻 1. Giriş: Inception Projesi Nedir?
+Inception is a system-administration project built around Docker. The goal is to set
+up a small, self-hosted web infrastructure — entirely from custom-built images —
+where several isolated services run in dedicated containers and communicate over a
+private Docker network.
 
-**Inception**, Docker kullanarak sistem yönetimi ve mikroservis mimarisi tasarımı yapmayı öğreten bir projedir. Projenin temel amacı; hazır/resmi Docker imajları (hazır WordPress veya hazır Nginx imajları gibi) kullanmadan, **Alpine** veya **Debian** (bu projede `debian:bullseye` tercih edilmiştir) gibi ham bir işletim sistemi imajı üzerine servisleri sıfırdan kurup yapılandırmaktır.
+The stack is composed of three mandatory services, each in its own container:
 
-Proje kapsamında şu üç temel servis Docker konteynerleri olarak ayağa kaldırılır:
-1. **Nginx:** TLSv1.2 veya TLSv1.3 destekleyen güvenli bir Web Sunucusu (Web Server).
-2. **WordPress (PHP-FPM ile):** İçerik Yönetim Sistemi ve uygulama sunucusu.
-3. **MariaDB:** WordPress verilerini saklayan ilişkisel veritabanı.
+- **NGINX** – the only entry point, exposed on port `443` with TLSv1.2 / TLSv1.3 only.
+- **WordPress + php-fpm** – the CMS / application layer (no web server inside the container).
+- **MariaDB** – the relational database that stores all WordPress data.
 
-Bu servisler, dış dünyaya yalnızca Nginx üzerinden (port 443 - HTTPS) açık olacak şekilde, birbirleriyle özel bir Docker ağı (`inception_network`) üzerinden haberleşirler.
+Two Docker named volumes persist data on the host under `/home/iekmen/data`: one for
+the database, one for the WordPress site files. A dedicated bridge network
+(`inception_network`) links the containers; only NGINX is reachable from outside.
 
----
+All images are built locally from `debian:bookworm` (the penultimate stable Debian
+release). Pulling ready-made service images (WordPress, NGINX, MariaDB, …) is
+forbidden by the subject; Alpine/Debian base images are the only exception.
 
-## 🛠️ 2. Temel Teknolojik Kavramlar (En Temele İniş)
+## Instructions
 
-Projenin mantığını tam olarak kavramak için kullanılan teknolojilerin en temel çalışma prensiplerini bilmek gerekir.
+### Prerequisites
 
-### A. Docker ve Konteyner (Container) Nedir?
-Geleneksel sunucu mimarisinde uygulamalar doğrudan fiziksel makinede veya **Sanal Makineler (Virtual Machine - VM)** üzerinde çalıştırılırdı. 
+- A Linux host (ideally a Virtual Machine) with `docker` and the `docker compose` plugin.
+- `make`.
+- An entry in `/etc/hosts` so the domain resolves locally:
 
-* **Sanal Makine (VM):** Bir Hypervisor katmanı üzerinde çalışır. Her VM'in kendine ait tam bir konuk işletim sistemi (Guest OS), sanal donanım sürücüleri ve çekirdeği (Kernel) vardır. Bu durum yüksek kaynak (CPU, RAM, disk) tüketimine ve yavaş açılma sürelerine neden olur.
-* **Docker Konteynerleri:** Ev sahibi işletim sisteminin (Host OS) çekirdeğini (Kernel) ortaklaşa kullanır. Süreçleri (Process) mantıksal olarak birbirinden izole etmek için Linux çekirdeğinin **Namespaces** (ağ, süreç ID'leri, dosya sistemi izolasyonu için) ve **Cgroups** (CPU, RAM limiti belirleme için) özelliklerini kullanır. Konteynerler son derece hafiftir, saniyeler içinde başlar ve çok az kaynak tüketir.
+  ```
+  127.0.0.1   iekmen.42.fr
+  ```
 
-### B. Docker Compose Nedir?
-Tek bir konteyneri çalıştırmak için uzun `docker run ...` komutları kullanılabilir. Ancak birden fazla konteynerden oluşan karmaşık uygulamalarda, konteynerlerin birbirleriyle ilişkilerini, ağlarını, birimlerini (volumes) ve ortam değişkenlerini yönetmek zorlaşır. 
+### Configuration
 
-**Docker Compose**, çoklu konteyner içeren Docker uygulamalarını tanımlamak ve çalıştırmak için kullanılan bir araçtır. Tüm yapılandırma tek bir YAML dosyasında (`docker-compose.yml`) tanımlanır ve tek bir komutla (`docker compose up`) tüm sistem ayağa kaldırılabilir.
+Environment variables live in `srcs/.env`. This file is git-ignored and must **never**
+be committed. Create it from the template below and set your own values:
 
-### C. Nginx Nedir ve Ne İşe Yarar?
-**Nginx**, yüksek performanslı, olay güdümlü (event-driven) ve eşzamanlı istekleri çok düşük kaynak tüketimiyle işleyebilen açık kaynaklı bir **Web Sunucusu** ve **Tersine Vekil Sunucusudur (Reverse Proxy)**.
+```env
+DOMAIN_NAME=iekmen.42.fr
 
-* **Web Sunucusu Olarak:** HTML, CSS, resim gibi statik dosyaları doğrudan tarayıcıya çok hızlı sunar.
-* **Tersine Vekil (Reverse Proxy) Olarak:** İstemcilerden gelen istekleri karşılar ve arka plandaki diğer uygulama sunucularına (örneğin WordPress/PHP-FPM) yönlendirir.
-* **SSL/TLS Şifreleme Sunucusu Olarak:** İstemci ile sunucu arasındaki trafiği şifreler. Inception projesinde Nginx, dış dünyayla konuşan tek servistir ve sadece port 443 (HTTPS) üzerinden şifreli bağlantıları kabul eder.
+MYSQL_DATABASE=inception_db
+MYSQL_USER=inception_user
+MYSQL_PASSWORD=<your-db-password>
+MYSQL_ROOT_PASSWORD=<your-db-root-password>
 
-### D. MariaDB Nedir ve Ne İşe Yarar?
-**MariaDB**, dünyanın en popüler ilişkisel veritabanlarından biri olan **MySQL**'in yaratıcıları tarafından geliştirilmiş, açık kaynaklı bir **İlişkisel Veritabanı Yönetim Sistemidir (RDBMS - Relational Database Management System)**.
-
-* **Neden MariaDB?** Oracle firması MySQL'i satın aldıktan sonra topluluk, projenin tamamen açık kaynaklı kalmasını sağlamak amacıyla MariaDB'yi "fork" etti (çatalladı). Günümüzde MySQL ile neredeyse tamamen uyumludur ancak daha yüksek performanslı depolama motorları ve tamamen açık kaynaklı bir geliştirme modeli sunar.
-* **İlişkisel Veritabanı Mantığı:** Verileri tablolarda (satır ve sütunlar halinde) tutar. Tablolar birbirleriyle "ilişkilendirilebilir" (örneğin, bir kullanıcının ID'si ile yazdığı blog yazısının yazar_ID'si eşleştirilir). WordPress; yazıları, kullanıcıları, yorumları ve site ayarlarını saklamak için bu veritabanına ihtiyaç duyar.
-
-### E. WordPress Nedir ve Ne İşe Yarar?
-**WordPress**, PHP ve MySQL/MariaDB tabanlı, dünya üzerindeki web sitelerinin %40'ından fazlasının altyapısını oluşturan açık kaynaklı bir **İçerik Yönetim Sistemidir (CMS - Content Management System)**.
-
-* Kullanıcıların kod yazmadan web sitesi, blog veya e-ticaret siteleri oluşturmasını sağlar.
-* Dinamik bir yapıya sahiptir. Tarayıcıdan bir istek geldiğinde, PHP kodları çalışır, MariaDB veritabanından gerekli bilgileri çeker, bunları HTML formatına dönüştürür ve Nginx üzerinden tarayıcıya gönderir.
-
-### F. PHP-FPM Nedir? Neden Nginx Doğrudan PHP Çalıştıramaz?
-Nginx statik dosyaları (HTML, resim vb.) okuyup göndermede harikadır ancak kendisi PHP kodunu yorumlayıp çalıştıramaz. PHP kodlarının çalıştırılabilmesi için bir PHP yorumlayıcısına ihtiyaç vardır.
-
-* **PHP-FPM (FastCGI Process Manager):** PHP'nin web sitelerinde yoğun yük altındaki performansını artırmak için tasarlanmış bir FastCGI yöneticisidir. 
-* **Çalışma Şekli:** Nginx, gelen bir `.php` isteğini aldığında bunu **FastCGI** protokolü aracılığıyla PHP-FPM'e (genellikle port 9000 üzerinden) paslar. PHP-FPM isteği işler, PHP kodunu derleyip çalıştırır, gerekirse veritabanı ile konuşur ve sonucu Nginx'e geri gönderir. Nginx de bu sonucu istemciye iletir.
-
-### G. SSL/TLS ve Kendinden İmzalı (Self-Signed) Sertifika Nedir?
-* **SSL/TLS (Secure Sockets Layer / Transport Layer Security):** İnternet üzerinde verilerin şifrelenmiş olarak iletilmesini sağlayan güvenlik protokolleridir. HTTPS (HTTP Secure), verilerin HTTP protokolü üzerinden TLS ile şifrelenerek gönderilmesidir.
-* **Sertifika Yetkilisi (CA - Certificate Authority):** Güvenilir üçüncü taraf kuruluşlardır (Let's Encrypt, VeriSign vb.). Bir web sitesinin sertifikasını doğrularlar.
-* **Kendinden İmzalı (Self-Signed) Sertifika:** Herhangi bir güvenilir otorite tarafından imzalanmamış, sunucu yöneticisinin kendi oluşturduğu sertifikadır. Trafiği tamamen şifreler (güvenlidir) ancak tarayıcılar bu sertifikayı doğrulayacak bir otorite bulamadığı için kullanıcıya "Bu site güvenli değil / Bağlantınız gizli değil" uyarısı gösterir. Inception projesinde lokalde çalıştığımız için `openssl` ile kendimiz self-signed sertifika üretiyoruz.
-
----
-
-## 📐 3. Proje Mimarisi ve İstek Akışı (Request Flow)
-
-Sistemde isteklerin nasıl işlendiğini anlamak için veri akışını takip edelim.
-
-### İstek Akış Şeması (Mermaid)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Kullanıcı as Tarayıcı (İstemci)
-    participant Nginx as Nginx (Konteyner)
-    participant WP as WordPress / PHP-FPM (Konteyner)
-    participant DB as MariaDB (Konteyner)
-
-    Kullanıcı->>Nginx: HTTPS İsteği (https://iekmen.42.fr/index.php) - Port 443
-    Note over Nginx: SSL/TLS El Sıkışması yapılır.<br/>İstek çözümlenir.<br/>Dosya uzantısı .php olduğu için yönlendirilir.
-    Nginx->>WP: FastCGI Yönlendirmesi (wordpress:9000)
-    Note over WP: PHP kodları çalıştırılır.<br/>Veritabanı bilgisi istenir.
-    WP->>DB: SQL Sorgusu (mariadb:3306)
-    Note over DB: Verileri sorgular ve bulur.
-    DB-->>WP: SQL Sonucu
-    Note over WP: Sayfa HTML olarak render edilir.
-    WP-->>Nginx: İşlenmiş HTML çıktısı
-    Nginx-->>Kullanıcı: Şifrelenmiş HTML Yanıtı (HTTPS)
+WP_ADMIN_USER=<admin-name-without-"admin"-or-"administrator">
+WP_ADMIN_PASSWORD=<your-wp-admin-password>
+WP_ADMIN_EMAIL=<email>
+WP_NORMAL_USER=<author-name>
+WP_NORMAL_PASSWORD=<your-author-password>
+WP_NORMAL_EMAIL=<email>
 ```
 
-### Güvenlik ve İzolasyon Kuralları
-1. **Dışarıya Açık Portlar:** Sadece Nginx konteynerinin `443` portu dış dünyaya açıktır. MariaDB (`3306`) ve WordPress (`9000`) portları dışarıya kapatılmıştır.
-2. **Konteynerler Arası Haberleşme:** Konteynerler sadece kendi aralarında, Docker tarafından oluşturulan `inception_network` adlı köprü (bridge) ağında konuşabilirler.
-3. **Doğrudan Erişim Engeli:** MariaDB'ye dışarıdan kimse doğrudan erişemez. MariaDB sadece WordPress konteynerinden gelen sorguları kabul eder.
+### Build and run
 
----
+| Command | Effect |
+| --- | --- |
+| `make` / `make all` | Creates the host data directories and builds + starts all containers in the background. |
+| `make down` | Stops and removes the containers (data kept). |
+| `make clean` | `down` + removes images and volumes. |
+| `make fclean` | `clean` + deletes host data in `/home/iekmen/data` and prunes unused Docker objects. |
+| `make re` | `fclean` then `all`. |
 
-## 📂 4. Sistem Bileşenleri ve Yapılandırma Analizi
+Then open <https://iekmen.42.fr> and accept the self-signed certificate. The admin
+panel is at <https://iekmen.42.fr/wp-admin>.
 
-Projenin dosya yapısını ve her bir dosyanın ne işe yaradığını detaylıca inceleyelim.
+## Resources
 
-### A. Docker Compose Yapılandırması (`srcs/docker-compose.yml`)
+Documentation and references used:
 
-Bu dosya tüm sistemin orkestrasyonunu (yönetimini) sağlar.
+- **Docker docs** – Dockerfile best practices, `docker compose` file reference, named
+  volumes, user-defined bridge networks.
+- **NGINX docs** – `ssl_protocols`, FastCGI (`fastcgi_pass`), `server` blocks.
+- **MariaDB Knowledge Base** – first-run data-directory initialisation, user / `GRANT`
+  management, `mysqld_safe`.
+- **WordPress + WP-CLI handbook** – `wp core download` / `config create` / `core install`,
+  `wp user create`.
+- **Debian package archive** – checking which PHP version ships with each Debian
+  release (bullseye → PHP 7.4, bookworm → PHP 8.2).
+- Articles on **PID 1 in containers** and why `tail -f`, `sleep infinity`, `while true`
+  are anti-patterns for keeping a container alive.
 
-* **Servisler (Services):**
-  * `mariadb`, `wordpress` ve `nginx` servisleri tanımlanmıştır. Her birinin `build` parametresi ilgili Dockerfile'ın yolunu gösterir.
-  * `restart: always` sayesinde çöken veya duran bir konteyner Docker tarafından otomatik olarak yeniden başlatılır.
-  * `env_file: .env` ile `.env` dosyasındaki gizli şifreler ve değişkenler konteynerlerin içerisine aktarılır.
-* **Ağlar (Networks):**
-  * `inception_network` adında `bridge` tipinde özel bir sanal ağ tanımlanmıştır. Docker, bu ağa bağlı konteynerlerin birbirlerine isimleri ile ulaşabilmelerini sağlayan dahili bir DNS sunar (Örn: `wordpress` konteyneri `mariadb:3306` adresine erişebilir).
-* **Kalıcı Depolama (Volumes):**
-  * Konteynerler doğası gereği geçicidir (ephemeral). Konteyner silindiğinde içindeki tüm veriler kaybolur. Veritabanının ve yüklenen WordPress dosyalarının kalıcı olması için **Volumes** kullanılır.
-  * Projede `wordpress_data` ve `db_data` isimli iki adet local bind mount tanımlanmıştır. Bu birimler host makinesindeki `/home/iekmen/data/wordpress` ve `/home/iekmen/data/mariadb` dizinlerine doğrudan bağlanmıştır (bind). Konteyner silinse bile veriler host makinede güvenle kalır.
+### Use of AI
 
----
+AI (Claude) was used as an assistant, not as a code generator, for:
 
-### B. Nginx Servisi (`srcs/requirements/nginx/`)
+- **Review** – auditing the repository against the subject and listing rule
+  violations (a git-tracked `.env`, a PHP version mismatch between the base image and
+  the installed packages, missing README sections, an empty `USER_DOC.md`).
+- **Explanations** – clarifying trade-offs (named volumes vs bind mounts, secrets vs
+  environment variables, PID 1 and entrypoint design).
+- **Documentation** – drafting and structuring the Markdown files (this README and
+  `USER_DOC.md`).
 
-Nginx, istemciden gelen HTTPS isteklerini karşılayan kapıdır.
+All Dockerfiles, configuration files and shell scripts were written and are understood
+by the author; AI output was reviewed and adapted, never copy-pasted blindly.
 
-#### 1. Dockerfile (`srcs/requirements/nginx/Dockerfile`)
-* **`FROM debian:bullseye`:** Proje gereği Debian Bullseye tabanlı stabil bir sürüm kullanılır.
-* **`RUN apt-get update && apt-get install -y nginx openssl`:** Nginx web sunucusu ve şifreleme anahtarları üretmek için OpenSSL aracı kurulur.
-* **`RUN openssl req -x509 ...`:** 
-  Bu komut kendinden imzalı (self-signed) bir SSL sertifikası (`inception.crt`) ve özel anahtarı (`inception.key`) üretir. Sertifikanın geçerlilik süresi, ülkesi (TR), şehri (Kocaeli) ve en önemlisi ortak adı (Common Name - CN) olan `iekmen.42.fr` bu komutla gömülür.
-* **`COPY conf/nginx.conf /etc/nginx/nginx.conf`:** Konfigürasyon dosyamızı konteynerin içine kopyalar.
-* **`EXPOSE 443`:** Nginx'in 443 portundan yayın yapacağını bildirir.
-* **`CMD [ "nginx", "-g", "daemon off;" ]`:** 
-  Nginx normalde arka planda (background daemon) çalışmaya meyillidir. Ancak Docker konteynerlerinde **PID 1** olarak çalışan ana sürecin (process) sonlanmaması gerekir. Eğer Nginx arka plana geçerse Docker konteynerin işinin bittiğini düşünerek konteyneri anında kapatır. `daemon off;` parametresi Nginx'i ön planda (foreground) çalışmaya zorlar ve konteynerin açık kalmasını sağlar.
+## Project description
 
-#### 2. Konfigürasyon (`srcs/requirements/nginx/conf/nginx.conf`)
-* **`listen 443 ssl;`:** Sadece güvenli 443 portunu dinler. SSL zorunludur.
-* **`ssl_protocols TLSv1.2 TLSv1.3;`:** Güvensiz olan eski SSL/TLS sürümlerini (SSLv3, TLSv1.0, TLSv1.1) devre dışı bırakır. Sadece modern ve güvenli TLS 1.2 ve TLS 1.3 protokollerine izin verir.
-* **`root /var/www/wordpress;`** ve **`index index.php;`:** Sitenin kök dizinini ve varsayılan olarak aranacak başlangıç dosyasını belirler.
-* **`location ~ \.php$ { ... }`:** 
-  Düzenli ifade (regex) kullanarak sonu `.php` ile biten tüm istekleri yakalar. Bu istekleri `fastcgi_pass wordpress:9000;` satırı ile `wordpress` konteynerinin `9000` portuna yönlendirir.
+### Docker and the project sources
 
----
+Each service has its own directory under `srcs/requirements/<service>/` containing:
 
-### C. MariaDB Servisi (`srcs/requirements/mariadb/`)
+- a `Dockerfile` built from `debian:bookworm`;
+- a `conf/` folder with the service configuration;
+- a `tools/` folder with the entrypoint script (for MariaDB and WordPress).
 
-MariaDB, WordPress'in tüm verilerini güvenli bir şekilde saklar.
+`srcs/docker-compose.yml` wires everything together: builds, container names,
+`restart: always`, the `inception_network` bridge, the two named volumes, and the
+single published port (`443`, NGINX only). The root `Makefile` merely orchestrates
+`docker compose`.
 
-#### 1. Dockerfile (`srcs/requirements/mariadb/Dockerfile`)
-* Debian tabanlı imaja `mariadb-server` kurar.
-* Konfigürasyon ve başlatma betiklerini kopyalar.
-* **`EXPOSE 3306`:** Veritabanının standart portunu dışarıya (sadece iç ağa) sunar.
-* **`ENTRYPOINT [ "mariadb_init.sh" ]`:** Konteyner başladığında ilk olarak veritabanı kurulum scriptini çalıştırır.
+Main design choices:
 
-#### 2. Konfigürasyon (`srcs/requirements/mariadb/conf/50-server.cnf`)
-* **`bind-address = 0.0.0.0`:** Varsayılan olarak MariaDB sadece `localhost` (127.0.0.1) üzerindeki bağlantıları dinler. Ancak mikroservis mimarisinde WordPress konteynerinden gelen bağlantıları kabul etmesi için ağdaki tüm adresleri (`0.0.0.0`) dinlemesi gerekir.
+- **One process per container.** Each entrypoint ends with `exec <daemon>` so the
+  service becomes PID 1 (correct signal handling, no `tail -f` / `while true` hacks).
+- **NGINX as the sole gateway.** Only port `443`, TLSv1.2 / TLSv1.3, with a
+  self-signed certificate generated at build time.
+- **WordPress waits for MariaDB** in its init script before running WP-CLI, instead
+  of relying on `depends_on` alone (which does not wait for readiness).
+- **Credentials via environment variables** from a git-ignored `.env`; no password is
+  written in any Dockerfile.
 
-#### 3. Başlatma Scripti (`srcs/requirements/mariadb/tools/mariadb_init.sh`)
-Veritabanı ilk kez çalıştırıldığında yapılandırılmalıdır.
-1. `service mariadb start` ile MariaDB servisini geçici olarak arka planda başlatır.
-2. `mysql -e` komutları ile:
-   * Ortam değişkenlerinden gelen `MYSQL_DATABASE` adında bir veritabanı oluşturur.
-   * `MYSQL_USER` adında bir kullanıcı oluşturur ve bu kullanıcıya şifresini (`MYSQL_PASSWORD`) atar.
-   * Bu kullanıcıya veritabanı üzerinde tam yetki (`GRANT ALL PRIVILEGES`) verir.
-   * Veritabanı yöneticisi olan `root` kullanıcısının şifresini `MYSQL_ROOT_PASSWORD` ile günceller.
-   * Değişiklikleri uygulamak için yetkileri yeniler (`FLUSH PRIVILEGES`).
-3. `mysqladmin -u root -p$MYSQL_ROOT_PASSWORD shutdown` komutu ile geçici olarak başlattığı MariaDB servisini güvenli bir şekilde durdurur.
-4. **`exec mysqld_safe`:** MariaDB'yi PID 1 olacak şekilde ön planda (foreground) çalıştırır. `exec` komutu, çalışan kabuk (shell) sürecinin yerini doğrudan `mysqld_safe` sürecinin almasını sağlar.
+### Virtual Machines vs Docker
 
----
+A virtual machine virtualises hardware: each guest ships a full kernel and OS,
+costing gigabytes of RAM and minutes to boot. A container virtualises the operating
+system: it shares the host kernel and isolates processes with **namespaces** (PID,
+network, mount, …) and limits resources with **cgroups** (CPU, RAM). Containers are
+megabytes in size and start in seconds, which is why running one service per
+container is practical here. The project as a whole still runs inside a VM, as the
+subject requires.
 
-### D. WordPress Servisi (`srcs/requirements/wordpress/`)
+### Secrets vs Environment Variables
 
-WordPress, sitenin mantıksal işlerini yürütür ve PHP kodlarını yorumlar.
+Environment variables (`.env` + `env_file`) are simple but leak easily: they appear
+in `docker inspect`, `/proc/<pid>/environ`, child processes and logs, and the file is
+trivially committed by mistake. Docker **secrets** are mounted as files under
+`/run/secrets/`, are not exposed in the environment, and are only visible to services
+that explicitly declare them. This project uses environment variables (mandatory per
+the subject) with a strictly git-ignored `.env`; Docker secrets are the recommended
+hardening step and the natural next improvement.
 
-#### 1. Dockerfile (`srcs/requirements/wordpress/Dockerfile`)
-* **`php7.4-fpm` ve `php7.4-mysql`:** PHP kodlarını çalıştırmak ve MariaDB veritabanı ile konuşabilmek için gerekli paketleri kurar.
-* **`curl` ve `mariadb-client`:** WordPress dosyalarını indirmek ve veritabanı bağlantı testleri yapmak için araçlar yükler.
-* **`wp-cli` Kurulumu:** WordPress kurulumunu, konfigürasyonunu ve kullanıcı oluşturma işlemlerini komut satırından otomatik yapabilmemizi sağlayan resmi komut satırı aracı (`wp`) kurulur ve `/usr/local/bin/` dizinine taşınır.
-* **`EXPOSE 9000`:** Nginx ile konuşacağı PHP-FPM portunu açar.
+### Docker Network vs Host Network
 
-#### 2. PHP-FPM Konfigürasyonu (`srcs/requirements/wordpress/conf/www.conf`)
-* **`listen = 9000`:** PHP-FPM'in varsayılan Unix soketi yerine, TCP/IP üzerinden Nginx'ten gelecek istekleri dinlemesi için port `9000` olarak ayarlanır.
-* **`user = www-data` ve `group = www-data`:** PHP süreçlerinin Debian üzerindeki standart web kullanıcısı yetkileriyle çalışmasını sağlar. Bu güvenlik açısından önemlidir.
-* **`pm = dynamic`:** PHP süreçlerinin (process) gelen yüke göre dinamik olarak oluşturulup yok edilmesini sağlar.
+With `network_mode: host` a container shares the host network stack directly: no
+isolation, potential port conflicts, and every internal service reachable from
+outside. A user-defined bridge network (`inception_network`) gives each container its
+own interface and an internal DNS, so containers reach each other by service name
+(e.g. `mariadb:3306`, `wordpress:9000`) and nothing is exposed unless a port is
+explicitly published. Only NGINX publishes `443`; MariaDB (`3306`) and php-fpm
+(`9000`) stay internal. `network_mode: host`, `--link` and `links:` are forbidden by
+the subject.
 
-#### 3. Başlatma Scripti (`srcs/requirements/wordpress/tools/wp_init.sh`)
-Konteyner ilk kez ayağa kalktığında WordPress'i otomatik kurar:
-1. `wp-config.php` dosyasının var olup olmadığını kontrol eder. Yoksa WordPress sıfırdan kurulacaktır.
-2. `wp core download`: WordPress kaynak dosyalarını indirir.
-3. `wp config create`: Veritabanı adı, kullanıcısı, şifresi ve host adresini (`mariadb:3306`) belirterek `wp-config.php` dosyasını oluşturur.
-4. `wp core install`:
-   * Sitenin başlığını ve URL'sini (`iekmen.42.fr`) ayarlar.
-   * Yönetici (`admin`) kullanıcısını oluşturur. (42 kuralları gereği yönetici adı içinde **admin** veya **administrator** kelimeleri geçemez).
-5. `wp user create`: Yönetici haricinde içerik üretebilecek ikinci bir normal kullanıcı (yazar rolünde) oluşturur.
-6. `chown -R www-data:www-data /var/www/wordpress`: Tüm WordPress dosyalarının sahipliğini Nginx ve PHP'nin okuyup yazabilmesi için `www-data` kullanıcısına verir.
-7. **`exec php-fpm7.4 -F`:** PHP-FPM servisini ön planda (foreground) çalıştırarak konteynerin açık kalmasını sağlar.
+### Docker Volumes vs Bind Mounts
 
----
-
-## 🔒 5. Çevre Değişkenleri ve Güvenlik (`.env`)
-
-Sistemde hiçbir şifre veya hassas bilgi kaynak kodların içerisine doğrudan yazılmamalıdır (Hardcoded). Bunun yerine veriler `srcs/.env` dosyasında tutulur.
-
-* **Neden Önemli?** `.env` dosyası genellikle `.gitignore` dosyasına eklenerek Git depolarına gönderilmez (güvenlik için). docker-compose bu dosyayı okur ve değişkenleri çalışma anında konteynerlerin içerisine aktarır.
-* **İçerik Yapısı:** Veritabanı adı (`MYSQL_DATABASE`), veritabanı kullanıcı adı/şifresi, veritabanı root şifresi, WordPress admin kullanıcı adı/şifresi ve normal yazar kullanıcı adı/şifresi burada tanımlanır.
-
----
-
-## ⚙️ 6. Sistemi Yönetmek: Makefile Kuralları
-
-Projenin kök dizininde bulunan `Makefile`, sistemi kolayca yönetmek için kısayol komutları sunar.
-
-| Komut | Açıklama |
-| :--- | :--- |
-| **`make`** veya **`make all`** | Host üzerinde gerekli hacim klasörlerini (`/home/iekmen/data/...`) oluşturur ve docker-compose ile tüm konteynerleri arka planda (`-d`) derleyerek (`--build`) ayağa kaldırır. |
-| **`make down`** | Çalışan tüm konteynerleri durdurur ve siler ancak veritabanı ve WordPress dosyalarına (volümlere) dokunmaz. |
-| **`make clean`** | Konteynerleri durdurur; ilişkili imajları ve ağları temizler. |
-| **`make fclean`** | `make clean` işlemini yapar. Ek olarak host bilgisayardaki tüm kalıcı verileri (`/home/iekmen/data/*`) siler ve kullanılmayan tüm Docker nesnelerini temizler (`docker system prune`). |
-| **`make re`** | Her şeyi sıfırlayıp sistemi baştan temiz bir şekilde derleyip çalıştırır. |
-
----
-
-## ⚠️ 7. 42 Inception Projesinde Dikkat Edilmesi Gereken Kritik Kurallar
-
-Projenin değerlendirilmesi (evaluation) sırasında sınavı geçmenizi sağlayan en kritik teknik detaylar şunlardır:
-
-1. **Hazır İmaj Yasağı:** Docker Hub'dan direkt `nginx:latest` veya `wordpress:php7.4` çekemezsiniz. Her servisin Dockerfile'ı ham bir işletim sisteminden (Debian/Alpine) başlamalıdır.
-2. **PID 1 Kuralı:** Konteynerler sanal makine değildir. Sadece tek bir görevi yerine getirmek için tasarlanmışlardır. Konteyner içindeki 1 numaralı süreç (PID 1) sonlandığında konteyner durur. Bu yüzden scriptlerin sonu mutlaka `exec` ile ön planda çalışan servise bağlanmalıdır (Örn: `exec php-fpm7.4 -F` veya `exec mysqld_safe`).
-3. **SSL/TLS Zorunluluğu:** Nginx yapılandırmasında SSL sertifikaları doğru tanımlanmalı ve sadece TLS v1.2/v1.3 kabul edilmelidir. HTTP (port 80) istekleri tamamen engellenmeli veya yönlendirilmelidir.
-4. **WordPress Admin Kısıtlaması:** WordPress yönetici kullanıcı adı asla `admin`, `administrator` veya bunları içeren bir kelime olamaz. Değerlendirmede ilk bakılan yerlerden biridir.
-5. **Kalıcı Hacimler (Volumes):** Docker Volumes mutlaka host makinesinde belirtilen klasörlere (`/home/iekmen/data/...`) bind edilmelidir. Konteynerler durdurulup silindiğinde bile yüklenen resimler veya veritabanı kayıtları kaybolmamalıdır.
+A bind mount maps an arbitrary host path into a container; it is host-path dependent
+and not managed by Docker. A **named volume** is managed by Docker and has its own
+lifecycle, and is the storage type required here. The subject also requires the data
+to live under `/home/iekmen/data`, so both named volumes are declared with the
+`local` driver and `driver_opts` (`type: none`, `o: bind`,
+`device: /home/iekmen/data/...`): Docker still manages them as named volumes while the
+bytes land in the required host directory. Plain bind mounts declared directly in a
+service's `volumes:` list are not allowed for these two persistent storages.

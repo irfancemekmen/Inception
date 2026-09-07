@@ -38,12 +38,10 @@ Docker Compose, birden fazla Docker konteynerini tek bir yapılandırma dosyası
 Projenin mimari planını oluşturan `srcs/docker-compose.yml` dosyasının içeriği ve parametre açıklamaları aşağıdadır:
 
 ```yaml
-version: '3.8'
-
 services:
   mariadb:
     build: ./requirements/mariadb
-    image: mariadb
+    image: mariadb:1.0
     container_name: mariadb
     restart: always
     env_file: .env
@@ -54,7 +52,7 @@ services:
 
   wordpress:
     build: ./requirements/wordpress
-    image: wordpress
+    image: wordpress:1.0
     container_name: wordpress
     restart: always
     env_file: .env
@@ -67,7 +65,7 @@ services:
 
   nginx:
     build: ./requirements/nginx
-    image: nginx
+    image: nginx:1.0
     container_name: nginx
     restart: always
     ports:
@@ -101,14 +99,14 @@ networks:
 
 #### Genel Parametre Açıklamaları:
 - **build:** Hazır bir Docker imajı kullanmak yasak olduğu için, Docker'a belirtilen dizindeki (örn: `./requirements/mariadb`) kendi yazdığımız `Dockerfile` dosyasını okumasını ve sistemi sıfırdan inşa etmesini söyler.
-- **image:** Derlenen imaja verilecek ismi belirler.
+- **image:** Derlenen imaja verilecek ad ve etiketi belirler (`mariadb:1.0` gibi). Servis adıyla aynı isim kullanılır; subject `latest` etiketini yasakladığı için sabit bir sürüm etiketi (`1.0`) verilir.
 - **container_name:** Çalışan konteynerin adını sabitler.
 - **restart: always:** Olası bir hata veya sunucu kapanıp açılması durumunda konteynerin otomatik olarak yeniden başlatılmasını garanti eder.
 - **env_file:** Veritabanı şifreleri ve admin bilgileri gibi hassas verileri `.env` dosyasından okuyarak çevre değişkeni olarak konteynere aktarır.
 - **volumes:** Konteyner içindeki verilerin silinmesini önlemek için verileri ana makinedeki kalıcı disk alanına bağlar.
 - **networks:** Konteyneri `inception_network` adlı özel izole iç ağımıza dahil eder.
 - **ports (Sadece NGINX için):** Ana makinemize (host) `443` portundan (HTTPS) gelen tüm istekleri, NGINX konteynerinin `443` portuna yönlendirir. Proje kuralları gereği port `80` (HTTP) kapalı tutulmaktadır.
-- **depends_on:** Servislerin başlama sırasını belirtir. WordPress, MariaDB ayağa kalkmadan; NGINX ise WordPress ayağa kalkmadan çalışmaya başlamaz.
+- **depends_on:** Servislerin başlama sırasını belirtir: WordPress, MariaDB konteyneri başlamadan; NGINX ise WordPress konteyneri başlamadan çalışmaya başlamaz. Dikkat: `depends_on` yalnızca konteynerin *başladığını* bekler, servisin *hazır* olmasını değil. Bu yüzden `wp_init.sh` içinde ayrıca MariaDB'ye bağlanılabildiğini kontrol eden bir bekleme döngüsü vardır.
 
 ---
 
@@ -121,10 +119,11 @@ MariaDB, WordPress web sitesinin hafızasını oluşturur. Sitenin adı, kullan�
 Docker bu dosyayı yukarıdan aşağıya doğru okur ve her satırda yeni bir katman (layer) oluşturarak nihai veritabanı imajını hazırlar.
 
 ```dockerfile
-FROM debian:bullseye
+FROM debian:bookworm
 ```
 - İmajın hangi temel işletim sistemi üzerine kurulacağını belirler.
-- Docker Hub'dan Debian'ın "Bullseye" sürümünün tamamen boş, minimal bir versiyonunu indirir. Bundan sonraki tüm komutlar bu sanal Debian sisteminin içinde çalıştırılır.
+- Docker Hub'dan Debian'ın "Bookworm" (Debian 12) sürümünün tamamen boş, minimal bir versiyonunu indirir. Bundan sonraki tüm komutlar bu sanal Debian sisteminin içinde çalıştırılır.
+- Not: Subject "penultimate stable" (bir önceki kararlı sürüm) ister. Debian 13 (trixie) kararlı olduğu için penultimate = Debian 12 (bookworm).
 
 ```dockerfile
 RUN apt-get update && apt-get install -y mariadb-server
@@ -172,50 +171,43 @@ user = mysql
 #### 3. Başlangıç Betiği (`srcs/requirements/mariadb/tools/mariadb_init.sh`)
 ```bash
 #!/bin/bash
+set -e
 ```
-- İşletim sistemine (Debian), bu metin dosyasının içindeki komutları okurken `bash` programını kullanmasını söyler.
+- Betiğin `bash` ile yorumlanmasını söyler. `set -e`, herhangi bir komut hata verirse betiği anında durdurur (sessizce bozuk bir kuruluma devam etmeyi engeller).
 
 ```bash
-service mariadb start
-sleep 5
+if [ ! -d "/var/lib/mysql/mysql" ]; then
 ```
-- MariaDB'yi arka planda (daemon olarak) geçici bir süreliğine başlatır ve 5 saniye bekler.
-- Veritabanı ve kullanıcı oluşturmak için SQL komutları (`CREATE DATABASE` vb.) göndermemiz gerekiyor. Ancak veritabanı motoru çalışmıyorsa bu komutları göndereceğimiz bir muhatap yoktur. Önce motoru çalıştırırız, `sleep 5` ile de sistemin tamamen ayağa kalkıp komut dinlemeye hazır hale gelmesi için ona zaman tanırız.
+- `/var/lib/mysql/mysql` dizini (MariaDB'nin sistem şeması) yoksa, bu **ilk çalıştırmadır** ve veritabanı sıfırdan kurulmalıdır.
+- Volume `driver_opts` ile host'a `bind` edildiği için Docker, imaj içindeki `/var/lib/mysql` içeriğini boş volume'a **kopyalamaz**; bu yüzden datadir'i betik içinde biz kuruyoruz. İkinci ve sonraki açılışlarda bu blok atlanır, veriler korunur.
 
 ```bash
-mysql -e "CREATE DATABASE IF NOT EXISTS \`${MYSQL_DATABASE}\`;"
+    chown -R mysql:mysql /var/lib/mysql
+    mysql_install_db --user=mysql --datadir=/var/lib/mysql --skip-test-db > /dev/null
 ```
-- `mysql -e` : MariaDB'nin içine girip çıkmadan, terminal üzerinden doğrudan tek satırlık SQL komutu (-e / execute) göndermeyi sağlar.
-- `.env` dosyasında belirlediğimiz isimde (örneğin `wordpress_db`) yepyeni ve boş bir veritabanı oluşturur. `IF NOT EXISTS`, konteyner bir şekilde yeniden başlarsa aynı veritabanını tekrar oluşturmaya çalışıp hata vermesini engeller.
+- `chown`: host'ta oluşturulan `/home/iekmen/data/mariadb` dizini farklı bir kullanıcıya ait olabilir; `mysql` kullanıcısının yazabilmesi için sahiplik düzeltilir.
+- `mysql_install_db`: MariaDB'nin çalışması için gereken sistem tablolarını (`mysql`, `information_schema` şemaları) oluşturur. `--skip-test-db` gereksiz `test` veritabanını oluşturmaz.
 
 ```bash
-mysql -e "CREATE USER IF NOT EXISTS \`${MYSQL_USER}\`@'localhost' IDENTIFIED BY '${MYSQL_PASSWORD}';"
-mysql -e "GRANT ALL PRIVILEGES ON \`${MYSQL_DATABASE}\`.* TO \`${MYSQL_USER}\`@'%' IDENTIFIED BY '${MYSQL_PASSWORD}';"
+    mysqld --user=mysql --bootstrap <<EOF
+USE mysql;
+FLUSH PRIVILEGES;
+CREATE DATABASE IF NOT EXISTS \`${MYSQL_DATABASE}\`;
+CREATE USER IF NOT EXISTS \`${MYSQL_USER}\`@'%' IDENTIFIED BY '${MYSQL_PASSWORD}';
+GRANT ALL PRIVILEGES ON \`${MYSQL_DATABASE}\`.* TO \`${MYSQL_USER}\`@'%';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+FLUSH PRIVILEGES;
+EOF
 ```
-- WordPress'in veritabanına bağlanırken kullanacağı özel kullanıcıyı (örn: `wp_user`) ve şifresini yaratır.
-- Buradaki `@'%'` kısmı projenin çalışması için en kritik noktalardan biridir. `%` işareti "Herhangi bir IP adresi" demektir. WordPress farklı bir konteynerde (farklı bir IP'de) çalıştığı için, MariaDB'ye dışarıdan bağlanacaktır. Bu satır, WordPress kullanıcısına "uzaktan gelip bu veritabanı üzerinde her türlü işlemi (yazma, silme) yapma yetkisi" (`GRANT ALL PRIVILEGES`) verir.
-
-```bash
-mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';"
-mysql -e "FLUSH PRIVILEGES;"
-```
-- Sistemin en yetkili kullanıcısı olan `root` şifresini güvenlik amacıyla senin `.env` dosyasında belirlediğin şifre ile değiştirir.
-- `FLUSH PRIVILEGES` : MariaDB'ye "Az önce bir sürü yetki ve şifre değiştirdim, bunları hafızana al ve hemen şimdi uygulamaya başla" der.
-
-```bash
-mysqladmin -u root -p$MYSQL_ROOT_PASSWORD shutdown
-```
-- Başlangıçta açtığımız arka plan hizmetini, yeni belirlediğimiz root şifresini kullanarak kapatır.
-- Neden kapatıyoruz? Çünkü Docker'ın altın bir kuralı vardır: Bir konteynerin içindeki ana süreç (PID 1) arka planda çalışıyorsa, Docker o işin bittiğini sanır ve konteyneri kapatır. Başlangıçtaki `servise mariadb start` komutu servisi arka planda başlatmıştı. Eğer böyle bırakırsan konteyner anında çöker.
+- `mysqld --bootstrap`: MariaDB'yi **çevrimdışı** modda çalıştırır. Ağ soketi açmaz, stdin'den gelen SQL komutlarını sırayla işler ve çıkar. Bu sayede eski "servisi başlat → `sleep 5` → yapılandır → `mysqladmin shutdown` → yeniden başlat" hilesine gerek kalmaz; hiçbir aşamada dışarıya açık şifresiz bir pencere oluşmaz.
+- `.env`'den gelen değişkenlerle: WordPress veritabanı oluşturulur, WordPress kullanıcısı `@'%'` (herhangi bir IP — WordPress ayrı konteynerde olduğu için gerekli) olarak yaratılır ve bu veritabanında tam yetki alır, `root` şifresi belirlenir.
 
 ```bash
 exec mysqld_safe
 ```
-- İşte konteyneri sonsuza kadar ayakta o sihirli satır budur.
-- `mysqld_safe` : MariaDB'yi arka planda değil, doğrudan terminalin önüne kilitnemiş şekilde başlatır.
-- `exec` : Linux'ta "Mevcut bash betiği sürecini öldür, onun yerine bu yeni programı koy" anlamına gelir. Böylece `mysqld_safe` işlemi sistemdeki 1 numaralı süreç (PID 1) haline gelir.
+- Betiğin her açılışta çalışan tek satırıdır. `exec`, bu bash sürecinin yerine `mysqld_safe`'i koyar; böylece MariaDB **PID 1** olarak ön planda çalışır ve konteyner ayakta kalır.
 
-* **mariadb_init.sh Genel İşleyiş:** Konteyner ilk açıldığında arka planda geçici olarak MariaDB çalıştırılır. `.env` dosyasından gelen değişkenler ile gerekli veritabanı, kullanıcı ve yetkiler oluşturulur. Root şifresi güvenceye alınır. Ardından geçici servis durdurulup, konteynerin kapanmasını engellemek amacıyla `mysqld_safe` komutu `exec` ile PID 1 (ana süreç) olarak başlatılır.
+* **mariadb_init.sh Genel İşleyiş:** İlk açılışta `mysql_install_db` ile datadir kurulur, ardından `mysqld --bootstrap` ile `.env` değişkenleri kullanılarak veritabanı, kullanıcı ve şifreler çevrimdışı olarak oluşturulur. Sonraki açılışlarda `if` bloğu atlanır. Her durumda betik `exec mysqld_safe` ile MariaDB'yi PID 1 olarak başlatır.
 
 ---
 
@@ -225,20 +217,21 @@ WordPress, PHP tabanlı içerik yönetim sistemidir. Dinamik sayfalar (PHP kodla
 #### 1. Dockerfile (`srcs/requirements/wordpress/Dockerfile`)
 
 ```dockerfile
-FROM debian::bullseye
+FROM debian:bookworm
 ```
-- MariaDB'de olduğu gibi boş, minimal bir Debian 11 işletim sistemi indirir.
+- MariaDB'de olduğu gibi boş, minimal bir Debian 12 (bookworm) işletim sistemi indirir.
 
 ```dockerfile
 RUN apt-get update && apt-get install -y \
-    php7.4-fpm \
-    php7.4-mysql \
+    php8.2-fpm \
+    php8.2-mysql \
     curl \
     mariadb-client
 ```
 - Sistemin paket listesini günceller ve WordPress'in çalışması için gereken 4 temel programı kurar.
-- `php7.4-fpm` : FPM (FastCGI Process Manager), PHP kodlarını web sunucularının (NGINX) anlayabileceği şekilde çok hızlı işleyen özel bir servistir. Standart `php` paketi yerine bunu kurmamız gerekiyor.
-- `php7.4-mysql` : WordPress'in PHP kodlarının, az önce kurduğumuz MariaDB veritabanına bağlanıp konuşabilmesini sağlayan çevirmen eklentisidir.
+- Not: bookworm deposu PHP 8.2 sunar (bullseye 7.4 sunuyordu). Bu yüzden paket adları, `/etc/php/8.2/...` yolu ve `php-fpm8.2` ikilisi 8.2 sürümüne göredir.
+- `php8.2-fpm` : FPM (FastCGI Process Manager), PHP kodlarını web sunucularının (NGINX) anlayabileceği şekilde çok hızlı işleyen özel bir servistir. Standart `php` paketi yerine bunu kurmamız gerekiyor.
+- `php8.2-mysql` : WordPress'in PHP kodlarının, az önce kurduğumuz MariaDB veritabanına bağlanıp konuşabilmesini sağlayan çevirmen eklentisidir.
 - `curl` : İnternetten dosya indrime aracıdır.
 - `mariadb-client` : Veritabanı motoru değildir, sadece terminalden veritabanına bağlanmayı sağlayan araçlardır. `wp-cli` aracaının veritabanı bağlantısını test edebilmesi için gereklidir.
 
@@ -251,7 +244,7 @@ RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli
 - Normalde WordPress'i kurmak için tarayıcıdan girip "İleri, İleri, Şifre Belirle" gibi butonlara basman gerekir. Inception projesinde her şey otomatik olmalıdır. WP-CLI sayesinde hiçbir arayüze ihtiyaç duymadan, sadece terminal komutlarıyla WordPress indirebilir, veritabanına bağlayabilir ve admin hesabı açabilirsin.
 
 ```dockerfile
-COPY conf/www.conf /etc/php/7.4/fpm/pool.d/www.conf
+COPY conf/www.conf /etc/php/8.2/fpm/pool.d/www.conf
 ```
 - Bizim dışarıda hazırladığımız özel ayar dosyasını, konteynerin içindeki varsayılan ayar dosyasının üzerine yazar.
 - PHP-FPM  varsayılan olarak `.sock` (UNIX Socket) adı verilen yerel bir dosya üzerinden dinleme yapar. Bu, NGINX ve PHP aynı konteynerdeyse işe yarar. Ancak bizim projemizde NGINX başka bir konteynerde. Bu yüzden NGINX'in ona `inception_network` üzerinden ulaşabilmesi için `www.conf` içinde ayarı `listen = 9000` (TCP portu) olarak değiştirmemiz gerekir.
@@ -282,7 +275,7 @@ WORKDIR /var/www/wordpress
 ```dockerfile
 ENTRYPOINT [ "wp_init.sh" ]
 ```
-- Konteyner ayağa kalktığı anda kontrolü tamamen `wp_init.sh` betiğine devreder. Bu betik WordPress'i indirecek, ayarlarını yapacak ve en son satırında (`exec php-fpm7.4 -F` gibi bir komutla) PHP-FPM servisin ön planda başlatarak konteynerin hayatta kalmasını sağlayacak.
+- Konteyner ayağa kalktığı anda kontrolü tamamen `wp_init.sh` betiğine devreder. Bu betik WordPress'i indirecek, ayarlarını yapacak ve en son satırında (`exec php-fpm8.2 -F` komutuyla) PHP-FPM servisini ön planda başlatarak konteynerin hayatta kalmasını sağlayacak.
 
 #### 2. Yapılandırma Dosyası (`srcs/requirements/wordpress/conf/www.conf`)
 ```ini
@@ -322,6 +315,15 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
 - `--allow-root` Nedir? Docker konteynerleri varsayılan olarak en yüksek yetkili kullanıcı olan `root` olarak çalışır. Ancak WP-CLI, güvenlik sebebiyle "Root olarak WordPress kuramazsın" diyerek işlemi engeller. `--allow-root` parametresi ile bu güvenlik uyarısını bilerek aşıyor ve "Ben ne yaptığımı biliyorum, işleme devam et" diyoruz.
 
 ```bash
+    while ! mariadb -h mariadb -u $MYSQL_USER -p$MYSQL_PASSWORD -e "SELECT 1;" &> /dev/null; do
+        echo "MariaDB henüz hazır değil, bekleniyor..."
+        sleep 3
+    done
+```
+- `depends_on` yalnızca MariaDB konteynerinin **başladığını** garanti eder, veritabanının **bağlantı kabul etmeye hazır** olduğunu değil. Bu döngü, `wp config create` çalışmadan önce MariaDB'ye gerçekten bağlanabildiğimizi doğrular.
+- Bu bir "sonsuz döngü hilesi" değildir: koşul sağlanınca (DB ayağa kalkınca) döngü biter ve betik `exec php-fpm8.2 -F` satırına ilerler. Konteyneri ayakta tutan şey döngü değil, sondaki `exec`'tir.
+
+```bash
     wp config create \
         --dbname=$MYSQL_DATABASE \
         --dbuser=$MYSQL_USER \
@@ -359,7 +361,7 @@ chown -R www-data:www-data /var/www/wordpress
 - Debian tabanlı sistemlerde NGINX ve PHP-FPM servisleri güvenlik gereği `www-data` adlı kısıtlı bir kullanıcı hesabıyla çalışır. Eğer WordPress dosyalarının sahibi `root` olarak kalırsa, web sitenden fotoğraf yüklemeye çalıştığında veya bir tema kurmak istediğinde PHP "Buraya yazma yetkim yok" hatası (Permission Denied) verir. `chown` (Change Owner) komutu bu yetki krizini çözer.
 
 ```bash
-exec php-fpm7.4 -F
+exec php-fpm8.2 -F
 ```
 - Betiği ve WordPress kurulumunun bittiği noktadır. PHP-FPM servisini çalıştırır.
 - MariaDB'deki `mysqld_safe` mantığının birebir aynısıdır. `-F` (Foreground) bayrağı, PHP-FPM'in arka plana (daemon) kaçmasını engeller ve terminale kilitler, `exec` ise bu bash betiği sürecini öldürüp yerine PHP-FPM'i PID 1 yapar.
@@ -373,9 +375,9 @@ NGINX, sistemin dış dünyaya açılan tek kapısıdır. Port 443'ten gelen HTT
 
 #### 1. Dockerfile (`srcs/requirements/nginx/Dockerfile`)
 ```dockerfile
-FROM debian:bullseye
+FROM debian:bookworm
 ```
-- MariaDB ve WordPress konteynerlerinde olduğu gibi, sistemin temelini temiz bir Debian 11 olarak belirliyor.
+- MariaDB ve WordPress konteynerlerinde olduğu gibi, sistemin temelini temiz bir Debian 12 (bookworm) olarak belirliyor.
 
 ```dockerfile
 RUN apt-get update && apt-get install -y nginx openssl
@@ -464,17 +466,20 @@ DOMAIN_NAME=iekmen.42.fr
 # Veritabanı Ayarları
 MYSQL_DATABASE=inception_db
 MYSQL_USER=inception_user
-MYSQL_PASSWORD=cok_gizli_sifre
-MYSQL_ROOT_PASSWORD=cok_gizli_root_sifresi
+MYSQL_PASSWORD=<db-kullanici-sifresi>
+MYSQL_ROOT_PASSWORD=<db-root-sifresi>
 
 # WordPress Ayarları
-WP_ADMIN_USER=iekmen_yonetici
-WP_ADMIN_PASSWORD=yonetici_sifresi_123
-WP_ADMIN_EMAIL=iekmen@student.42kocaeli.com.tr
-WP_NORMAL_USER=yazar_kullanici
-WP_NORMAL_PASSWORD=yazar_sifresi_123
-WP_NORMAL_EMAIL=yazar@student.42kocaeli.tr
+WP_ADMIN_USER=<admin-adi>          # "admin"/"administrator" içeremez
+WP_ADMIN_PASSWORD=<wp-admin-sifresi>
+WP_ADMIN_EMAIL=<admin-eposta>
+WP_NORMAL_USER=<yazar-adi>
+WP_NORMAL_PASSWORD=<yazar-sifresi>
+WP_NORMAL_EMAIL=<yazar-eposta>
 ```
+
+> Yukarıdaki `<...>` alanları örnektir. Gerçek `srcs/.env` dosyası `.gitignore` içindedir ve
+> asla commit edilmemelidir; gerçek parolalar yalnızca yerel `.env` dosyasında tutulur.
 
 > [!IMPORTANT]
 > Proje kuralları gereği, `WP_ADMIN_USER` (WordPress Yönetici Adı) kesinlikle **admin** veya **administrator** kelimelerini (büyük/küçük harf duyarsız olarak) içeremez. Aksi halde kurulum betiği hata verecektir.
