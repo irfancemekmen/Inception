@@ -1,9 +1,6 @@
-# Environment variables — never commit real credentials
 .env
 srcs/.env
 
-# Docker secrets
 secrets/
 
-# OS / editor noise
 .DS_Store

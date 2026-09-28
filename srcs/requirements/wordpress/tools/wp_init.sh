@@ -4,17 +4,14 @@ set -e
 cd /var/www/wordpress
 
 if [ ! -f /var/www/wordpress/wp-config.php ]; then
-    # Şifreler Docker secrets dosyalarından okunur (.env'de tutulmaz)
     MYSQL_PASSWORD=$(cat /run/secrets/db_password)
     WP_ADMIN_PASSWORD=$(cat /run/secrets/wp_admin_password)
     WP_NORMAL_PASSWORD=$(cat /run/secrets/wp_user_password)
 
-    # Çekirdek dosyalar yoksa indir (yarım kalmış kurulumda tekrar indirme)
     if [ ! -f /var/www/wordpress/wp-load.php ]; then
         wp core download --allow-root
     fi
 
-    # MariaDB bağlantı kabul edene kadar bekle (sınırlı deneme, sonsuz döngü değil)
     for i in $(seq 30); do
         mariadb -h mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT 1;" &> /dev/null && break
         sleep 2
@@ -33,7 +30,6 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
         --admin_password="$WP_ADMIN_PASSWORD" \
         --admin_email="$WP_ADMIN_EMAIL" --allow-root
 
-    # Veritabanında kullanıcı zaten varsa (ör. yalnız dosyalar yeniden kurulduysa) tekrar oluşturma
     if ! wp user get "$WP_NORMAL_USER" --allow-root > /dev/null 2>&1; then
         wp user create \
             "$WP_NORMAL_USER" "$WP_NORMAL_EMAIL" \
