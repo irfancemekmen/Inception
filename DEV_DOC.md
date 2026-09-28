@@ -86,12 +86,14 @@ services:
 
 volumes:
   wordpress_data:
+    name: wordpress_data
     driver: local
     driver_opts:
       type: none
       o: bind
       device: /home/iekmen/data/wordpress
   db_data:
+    name: db_data
     driver: local
     driver_opts:
       type: none

@@ -33,9 +33,12 @@ if [ ! -f /var/www/wordpress/wp-config.php ]; then
         --admin_password="$WP_ADMIN_PASSWORD" \
         --admin_email="$WP_ADMIN_EMAIL" --allow-root
 
-    wp user create \
-        "$WP_NORMAL_USER" "$WP_NORMAL_EMAIL" \
-        --role=author --user_pass="$WP_NORMAL_PASSWORD" --allow-root
+    # Veritabanında kullanıcı zaten varsa (ör. yalnız dosyalar yeniden kurulduysa) tekrar oluşturma
+    if ! wp user get "$WP_NORMAL_USER" --allow-root > /dev/null 2>&1; then
+        wp user create \
+            "$WP_NORMAL_USER" "$WP_NORMAL_EMAIL" \
+            --role=author --user_pass="$WP_NORMAL_PASSWORD" --allow-root
+    fi
 fi
 
 chown -R www-data:www-data /var/www/wordpress
